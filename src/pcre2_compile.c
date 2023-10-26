@@ -706,9 +706,11 @@ static const char posix_names[] =
 static const uint8_t posix_name_lengths[] = {
   5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 6, 0 };
 
-#define PC_GRAPH  8
-#define PC_PRINT  9
-#define PC_PUNCT 10
+#define PC_DIGIT   7
+#define PC_GRAPH   8
+#define PC_PRINT   9
+#define PC_PUNCT  10
+#define PC_XDIGIT 13
 
 /* Table of class bit maps for each POSIX class. Each class is formed from a
 base map, with an optional addition or removal of another map. Then, for some
@@ -721,20 +723,20 @@ absolute value of the third field has these meanings: 0 => no tweaking, 1 =>
 remove vertical space characters, 2 => remove underscore. */
 
 static const int posix_class_maps[] = {
-  cbit_word,  cbit_digit, -2,             /* alpha */
-  cbit_lower, -1,          0,             /* lower */
-  cbit_upper, -1,          0,             /* upper */
-  cbit_word,  -1,          2,             /* alnum - word without underscore */
-  cbit_print, cbit_cntrl,  0,             /* ascii */
-  cbit_space, -1,          1,             /* blank - a GNU extension */
-  cbit_cntrl, -1,          0,             /* cntrl */
-  cbit_digit, -1,          0,             /* digit */
-  cbit_graph, -1,          0,             /* graph */
-  cbit_print, -1,          0,             /* print */
-  cbit_punct, -1,          0,             /* punct */
-  cbit_space, -1,          0,             /* space */
-  cbit_word,  -1,          0,             /* word - a Perl extension */
-  cbit_xdigit,-1,          0              /* xdigit */
+  cbit_word,   cbit_digit, -2,            /* alpha */
+  cbit_lower,  -1,          0,            /* lower */
+  cbit_upper,  -1,          0,            /* upper */
+  cbit_word,   -1,          2,            /* alnum - word without underscore */
+  cbit_print,  cbit_cntrl,  0,            /* ascii */
+  cbit_space,  -1,          1,            /* blank - a GNU extension */
+  cbit_cntrl,  -1,          0,            /* cntrl */
+  cbit_digit,  -1,          0,            /* digit */
+  cbit_graph,  -1,          0,            /* graph */
+  cbit_print,  -1,          0,            /* print */
+  cbit_punct,  -1,          0,            /* punct */
+  cbit_space,  -1,          0,            /* space */
+  cbit_word,   -1,          0,            /* word - a Perl extension */
+  cbit_xdigit, -1,          0             /* xdigit */
 };
 
 #ifdef SUPPORT_UNICODE
@@ -756,7 +758,7 @@ static int posix_substitutes[] = {
   PT_PXPUNCT, 0,    /* punct */
   PT_PXSPACE, 0,    /* space */   /* Xps is POSIX space, but from 8.34 */
   PT_WORD, 0,       /* word  */   /* Perl and POSIX space are the same */
-  -1, 0             /* xdigit, treat as non-UCP */
+  PT_PXXDIGIT, 0    /* xdigit */  /* Perl has additional hex digits */
 };
 #define POSIX_SUBSIZE (sizeof(posix_substitutes) / (2*sizeof(uint32_t)))
 #endif  /* SUPPORT_UNICODE */
@@ -1390,7 +1392,8 @@ return yield;
 are supplied. Repeat counts must be less than 65536 (MAX_REPEAT_COUNT); a
 larger value is used for "unlimited". We have to use signed arguments for
 read_number() because it is capable of returning a signed value. As of Perl
-5.34.0 either n or m may be absent, but not both.
+5.34.0 either n or m may be absent, but not both. Perl also allows spaces and
+tabs after { and before } and between the numbers and the comma, so we do too.
 
 Arguments:
   ptrptr         points to pointer to character after '{'
@@ -1409,44 +1412,50 @@ read_repeat_counts(PCRE2_SPTR *ptrptr, PCRE2_SPTR ptrend, uint32_t *minp,
   uint32_t *maxp, int *errorcodeptr)
 {
 PCRE2_SPTR p = *ptrptr;
+PCRE2_SPTR pp;
 BOOL yield = FALSE;
 BOOL had_minimum = FALSE;
 int32_t min = 0;
 int32_t max = REPEAT_UNLIMITED; /* This value is larger than MAX_REPEAT_COUNT */
 
 *errorcodeptr = 0;
+while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
 
 /* Check the syntax before interpreting. Otherwise, a non-quantifier sequence
 such as "X{123456ABC" would incorrectly give a "number too big in quantifier"
 error. */
 
-if (p < ptrend && IS_DIGIT(*p))
+pp = p;
+if (pp < ptrend && IS_DIGIT(*pp))
   {
   had_minimum = TRUE;
-  while (++p < ptrend && IS_DIGIT(*p)) {}
+  while (++pp < ptrend && IS_DIGIT(*pp)) {}
   }
 
-if (p >= ptrend) return FALSE;
-if (*p == CHAR_RIGHT_CURLY_BRACKET)
+while (pp < ptrend && (*pp == CHAR_SPACE || *pp == CHAR_HT)) pp++;
+if (pp >= ptrend) return FALSE;
+
+if (*pp == CHAR_RIGHT_CURLY_BRACKET)
   {
   if (!had_minimum) return FALSE;
   }
 else
   {
-  if (*p++ != CHAR_COMMA || p >= ptrend) return FALSE;
-  if (IS_DIGIT(*p))
+  if (*pp++ != CHAR_COMMA) return FALSE;
+  while (pp < ptrend && (*pp == CHAR_SPACE || *pp == CHAR_HT)) pp++;
+  if (pp >= ptrend) return FALSE;
+  if (IS_DIGIT(*pp))
     {
-    while (++p < ptrend && IS_DIGIT(*p)) {}
+    while (++pp < ptrend && IS_DIGIT(*pp)) {}
     }
   else if (!had_minimum) return FALSE;
-  if (p >= ptrend || *p != CHAR_RIGHT_CURLY_BRACKET) return FALSE;
+  while (pp < ptrend && (*pp == CHAR_SPACE || *pp == CHAR_HT)) pp++;
+  if (pp >= ptrend || *pp != CHAR_RIGHT_CURLY_BRACKET) return FALSE;
   }
 
 /* Now process the quantifier for real. We know it must be {n} or (n,} or {,m}
 or {n,m}. The only error that read_number() can return is for a number that is
 too big. If *errorcodeptr is returned as zero it means no number was found. */
-
-p = *ptrptr;
 
 /* Deal with {,m} or n too big. If we successfully read m there is no need to
 check m >= n because n defaults to zero. */
@@ -1454,7 +1463,8 @@ check m >= n because n defaults to zero. */
 if (!read_number(&p, ptrend, -1, MAX_REPEAT_COUNT, ERR5, &min, errorcodeptr))
   {
   if (*errorcodeptr != 0) goto EXIT;    /* n too big */
-  p++;  /* Skip comma */
+  p++;  /* Skip comma and subsequent spaces */
+  while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
   if (!read_number(&p, ptrend, -1, MAX_REPEAT_COUNT, ERR5, &max, errorcodeptr))
     {
     if (*errorcodeptr != 0) goto EXIT;  /* m too big */
@@ -1465,13 +1475,15 @@ if (!read_number(&p, ptrend, -1, MAX_REPEAT_COUNT, ERR5, &min, errorcodeptr))
 
 else
   {
+  while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
   if (*p == CHAR_RIGHT_CURLY_BRACKET)
     {
     max = min;
     }
   else   /* Handle {n,} or {n,m} */
     {
-    p++;    /* Skip comman */ 
+    p++;    /* Skip comma and subsequent spaces */
+    while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
     if (!read_number(&p, ptrend, -1, MAX_REPEAT_COUNT, ERR5, &max, errorcodeptr))
       {
       if (*errorcodeptr != 0) goto EXIT;   /* m too big */
@@ -1487,6 +1499,7 @@ else
 
 /* Valid quantifier exists */
 
+while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
 p++;
 yield = TRUE;
 if (minp != NULL) *minp = (uint32_t)min;
@@ -1592,6 +1605,10 @@ else if ((i = escapes[c - ESCAPES_FIRST]) != 0)
       {
       PCRE2_SPTR p = ptr + 1;
 
+      /* Perl ignores spaces and tabs after { */
+
+      while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
+
       /* \N{U+ can be handled by the \x{ code. However, this construction is
       not valid in EBCDIC environments because it specifies a Unicode
       character, not a codepoint in the local code. For example \N{U+0041}
@@ -1606,7 +1623,7 @@ else if ((i = escapes[c - ESCAPES_FIRST]) != 0)
 #else
         if (utf)
           {
-          ptr = p + 1;
+          ptr = p + 2;
           escape = 0;   /* Not a fancy escape after all */
           goto COME_FROM_NU;
           }
@@ -1665,7 +1682,9 @@ else
     is set. Otherwise, \u must be followed by exactly four hex digits or, if
     PCRE2_EXTRA_ALT_BSUX is set, by any number of hex digits in braces.
     Otherwise it is a lowercase u letter. This gives some compatibility with
-    ECMAScript (aka JavaScript). */
+    ECMAScript (aka JavaScript). Unlike other braced items, white space is NOT
+    allowed. When \u{ is not followed by hex digits, a special return is given
+    because otherwise \u{ 12} (for example) would be treated as u{12}. */
 
     case CHAR_u:
     if (!alt_bsux) *errorcodeptr = ERR37; else
@@ -1677,8 +1696,8 @@ else
           (xoptions & PCRE2_EXTRA_ALT_BSUX) != 0)
         {
         PCRE2_SPTR hptr = ptr + 1;
-        cc = 0;
 
+        cc = 0;
         while (hptr < ptrend && (xc = XDIGIT(*hptr)) != 0xff)
           {
           if ((cc & 0xf0000000) != 0)  /* Test for 32-bit overflow */
@@ -1694,7 +1713,11 @@ else
         if (hptr == ptr + 1 ||   /* No hex digits */
             hptr >= ptrend ||    /* Hit end of input */
             *hptr != CHAR_RIGHT_CURLY_BRACKET)  /* No } terminator */
-          break;         /* Hex escape not recognized */
+          {
+          escape = ESC_ub;    /* Special return */
+          ptr++;              /* Skip { */
+          break;              /* Hex escape not recognized */
+          }
 
         c = cc;          /* Accept the code point */
         ptr = hptr + 1;
@@ -1774,12 +1797,16 @@ else
     if (*ptr == CHAR_LEFT_CURLY_BRACKET)
       {
       PCRE2_SPTR p = ptr + 1;
+
+      while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
       if (!read_number(&p, ptrend, cb->bracount, MAX_GROUP_NUMBER, ERR61, &s,
           errorcodeptr))
         {
         if (*errorcodeptr == 0) escape = ESC_k;  /* No number found */
         break;
         }
+      while (p < ptrend && (*p == CHAR_SPACE || *p == CHAR_HT)) p++;
+
       if (p >= ptrend || *p != CHAR_RIGHT_CURLY_BRACKET)
         {
         *errorcodeptr = ERR57;
@@ -1875,55 +1902,63 @@ else
     break;
 
     /* \o is a relatively new Perl feature, supporting a more general way of
-    specifying character codes in octal. The only supported form is \o{ddd}. */
+    specifying character codes in octal. The only supported form is \o{ddd},
+    with optional spaces or tabs after { and before }. */
 
     case CHAR_o:
     if (ptr >= ptrend || *ptr++ != CHAR_LEFT_CURLY_BRACKET)
       {
       ptr--;
       *errorcodeptr = ERR55;
+      break;
       }
-    else if (ptr >= ptrend || *ptr == CHAR_RIGHT_CURLY_BRACKET)
-      *errorcodeptr = ERR78;
-    else
+
+    while (ptr < ptrend && (*ptr == CHAR_SPACE || *ptr == CHAR_HT)) ptr++;
+    if (ptr >= ptrend || *ptr == CHAR_RIGHT_CURLY_BRACKET)
       {
-      c = 0;
-      overflow = FALSE;
-      while (ptr < ptrend && *ptr >= CHAR_0 && *ptr <= CHAR_7)
-        {
-        cc = *ptr++;
-        if (c == 0 && cc == CHAR_0) continue;     /* Leading zeroes */
+      *errorcodeptr = ERR78;
+      break;
+      }
+
+    c = 0;
+    overflow = FALSE;
+    while (ptr < ptrend && *ptr >= CHAR_0 && *ptr <= CHAR_7)
+      {
+      cc = *ptr++;
+      if (c == 0 && cc == CHAR_0) continue;     /* Leading zeroes */
 #if PCRE2_CODE_UNIT_WIDTH == 32
-        if (c >= 0x20000000l) { overflow = TRUE; break; }
+      if (c >= 0x20000000l) { overflow = TRUE; break; }
 #endif
-        c = (c << 3) + (cc - CHAR_0);
+      c = (c << 3) + (cc - CHAR_0);
 #if PCRE2_CODE_UNIT_WIDTH == 8
-        if (c > (utf ? 0x10ffffU : 0xffU)) { overflow = TRUE; break; }
+      if (c > (utf ? 0x10ffffU : 0xffU)) { overflow = TRUE; break; }
 #elif PCRE2_CODE_UNIT_WIDTH == 16
-        if (c > (utf ? 0x10ffffU : 0xffffU)) { overflow = TRUE; break; }
+      if (c > (utf ? 0x10ffffU : 0xffffU)) { overflow = TRUE; break; }
 #elif PCRE2_CODE_UNIT_WIDTH == 32
-        if (utf && c > 0x10ffffU) { overflow = TRUE; break; }
+      if (utf && c > 0x10ffffU) { overflow = TRUE; break; }
 #endif
-        }
-      if (overflow)
-        {
-        while (ptr < ptrend && *ptr >= CHAR_0 && *ptr <= CHAR_7) ptr++;
-        *errorcodeptr = ERR34;
-        }
-      else if (ptr < ptrend && *ptr++ == CHAR_RIGHT_CURLY_BRACKET)
-        {
-        if (utf && c >= 0xd800 && c <= 0xdfff &&
-            (xoptions & PCRE2_EXTRA_ALLOW_SURROGATE_ESCAPES) == 0)
-          {
-          ptr--;
-          *errorcodeptr = ERR73;
-          }
-        }
-      else
+      }
+
+    while (ptr < ptrend && (*ptr == CHAR_SPACE || *ptr == CHAR_HT)) ptr++;
+
+    if (overflow)
+      {
+      while (ptr < ptrend && *ptr >= CHAR_0 && *ptr <= CHAR_7) ptr++;
+      *errorcodeptr = ERR34;
+      }
+    else if (ptr < ptrend && *ptr++ == CHAR_RIGHT_CURLY_BRACKET)
+      {
+      if (utf && c >= 0xd800 && c <= 0xdfff &&
+          (xoptions & PCRE2_EXTRA_ALLOW_SURROGATE_ESCAPES) == 0)
         {
         ptr--;
-        *errorcodeptr = ERR64;
+        *errorcodeptr = ERR73;
         }
+      }
+    else
+      {
+      ptr--;
+      *errorcodeptr = ERR64;
       }
     break;
 
@@ -1952,10 +1987,13 @@ else
       {
       if (ptr < ptrend && *ptr == CHAR_LEFT_CURLY_BRACKET)
         {
+        ptr++;
+        while (ptr < ptrend && (*ptr == CHAR_SPACE || *ptr == CHAR_HT)) ptr++;
+
 #ifndef EBCDIC
         COME_FROM_NU:
 #endif
-        if (++ptr >= ptrend || *ptr == CHAR_RIGHT_CURLY_BRACKET)
+        if (ptr >= ptrend || *ptr == CHAR_RIGHT_CURLY_BRACKET)
           {
           *errorcodeptr = ERR78;
           break;
@@ -1978,6 +2016,12 @@ else
             }
           }
 
+        /* Perl ignores spaces and tabs before } */
+
+        while (ptr < ptrend && (*ptr == CHAR_SPACE || *ptr == CHAR_HT)) ptr++;
+
+        /* On overflow, skip remaining hex digits */
+
         if (overflow)
           {
           while (ptr < ptrend && XDIGIT(*ptr) != 0xff) ptr++;
@@ -1993,10 +2037,10 @@ else
             }
           }
 
-        /* If the sequence of hex digits does not end with '}', give an error.
-        We used just to recognize this construct and fall through to the normal
-        \x handling, but nowadays Perl gives an error, which seems much more
-        sensible, so we do too. */
+        /* If the sequence of hex digits (followed by optional space) does not
+        end with '}', give an error. We used just to recognize this construct
+        and fall through to the normal \x handling, but nowadays Perl gives an
+        error, which seems much more sensible, so we do too. */
 
         else
           {
@@ -2388,12 +2432,13 @@ return -1;
 
 /* This function is called from parse_regex() below whenever it needs to read
 the name of a subpattern or a (*VERB) or an (*alpha_assertion). The initial
-pointer must be to the character before the name. If that character is '*' we
-are reading a verb or alpha assertion name. The pointer is updated to point
-after the name, for a VERB or alpha assertion name, or after tha name's
-terminator for a subpattern name. Returning both the offset and the name
-pointer is redundant information, but some callers use one and some the other,
-so it is simplest just to return both.
+pointer must be to the preceding character. If that character is '*' we are
+reading a verb or alpha assertion name. The pointer is updated to point after
+the name, for a VERB or alpha assertion name, or after tha name's terminator
+for a subpattern name. Returning both the offset and the name pointer is
+redundant information, but some callers use one and some the other, so it is
+simplest just to return both. When the name is in braces, spaces and tabs are
+allowed (and ignored) at either end.
 
 Arguments:
   ptrptr      points to the character pointer variable
@@ -2416,9 +2461,13 @@ read_name(PCRE2_SPTR *ptrptr, PCRE2_SPTR ptrend, BOOL utf, uint32_t terminator,
   int *errorcodeptr, compile_block *cb)
 {
 PCRE2_SPTR ptr = *ptrptr;
-BOOL is_group = (*ptr != CHAR_ASTERISK);
+BOOL is_group = (*ptr++ != CHAR_ASTERISK);
+BOOL is_braced = terminator == CHAR_RIGHT_CURLY_BRACKET;
 
-if (++ptr >= ptrend)               /* No characters in name */
+if (is_braced)
+  while (ptr < ptrend && (*ptr == CHAR_SPACE || *ptr == CHAR_HT)) ptr++;
+
+if (ptr >= ptrend)                 /* No characters in name */
   {
   *errorcodeptr = is_group? ERR62: /* Subpattern name expected */
                             ERR60; /* Verb not recognized or malformed */
@@ -2497,6 +2546,8 @@ if (is_group)
     *errorcodeptr = ERR62;   /* Subpattern name expected */
     goto FAILED;
     }
+  if (is_braced)
+    while (ptr < ptrend && (*ptr == CHAR_SPACE || *ptr == CHAR_HT)) ptr++;
   if (ptr >= ptrend || *ptr != (PCRE2_UCHAR)terminator)
     {
     *errorcodeptr = ERR42;
@@ -2690,7 +2741,7 @@ the main compiling phase. */
 
 #define PARSE_TRACKED_EXTRA_OPTIONS (PCRE2_EXTRA_CASELESS_RESTRICT| \
   PCRE2_EXTRA_ASCII_BSD|PCRE2_EXTRA_ASCII_BSS|PCRE2_EXTRA_ASCII_BSW| \
-  PCRE2_EXTRA_ASCII_POSIX)
+  PCRE2_EXTRA_ASCII_DIGIT|PCRE2_EXTRA_ASCII_POSIX)
 
 /* States used for analyzing ranges in character classes. The two OK values
 must be last. */
@@ -2947,6 +2998,11 @@ while (ptr < ptrend)
         if (c >= META_END) *parsed_pattern++ = META_BIGVALUE;
 #endif
         *parsed_pattern++ = c;
+        break;
+
+        case ESC_ub:
+        *parsed_pattern++ = CHAR_u;
+        PARSED_LITERAL(CHAR_LEFT_CURLY_BRACKET, parsed_pattern);
         break;
 
         case ESC_Q:
@@ -3206,6 +3262,16 @@ while (ptr < ptrend)
       *parsed_pattern++ = META_ESCAPE + escape;
       break;
 
+      /* This is a special return that happens only in EXTRA_ALT_BSUX mode,
+      when \u{ is not followed by hex digits and }. It requests two literal
+      characters, u and { and we need this, as otherwise \u{ 12} (for example)
+      would be treated as u{12} now that spaces are allowed in quantifiers. */
+
+      case ESC_ub:
+      *parsed_pattern++ = CHAR_u;
+      PARSED_LITERAL(CHAR_LEFT_CURLY_BRACKET, parsed_pattern);
+      break;
+
       case ESC_X:
 #ifndef SUPPORT_UNICODE
       errorcode = ERR45;   /* Supported only with Unicode support */
@@ -3297,7 +3363,8 @@ while (ptr < ptrend)
         if (errorcode != 0) goto ESCAPE_FAILED;
         }
 
-      /* Not a numerical recursion */
+      /* Not a numerical recursion. Perl allows spaces and tabs after { and
+      before } but not for other delimiters. */
 
       if (!read_name(&ptr, ptrend, utf, terminator, &offset, &name, &namelen,
           &errorcode, cb)) goto ESCAPE_FAILED;
@@ -3610,7 +3677,8 @@ while (ptr < ptrend)
 #ifdef SUPPORT_UNICODE
         if ((options & PCRE2_UCP) != 0 &&
             (xoptions & PCRE2_EXTRA_ASCII_POSIX) == 0 &&
-            !(posix_class == 7 && (xoptions & PCRE2_EXTRA_ASCII_DIGIT) != 0))
+            !((xoptions & PCRE2_EXTRA_ASCII_DIGIT) != 0 &&
+              (posix_class == PC_DIGIT || posix_class == PC_XDIGIT)))
           {
           int ptype = posix_substitutes[2*posix_class];
           int pvalue = posix_substitutes[2*posix_class + 1];
@@ -3701,7 +3769,7 @@ while (ptr < ptrend)
           {
           case 0:  /* Escaped character code point is in c */
           char_is_literal = FALSE;
-          goto CLASS_LITERAL;
+          goto CLASS_LITERAL;      /* (a few lines above) */
 
           case ESC_b:
           c = CHAR_BS;    /* \b is backspace in a class */
@@ -4165,13 +4233,19 @@ while (ptr < ptrend)
                 }
               if (*ptr == CHAR_P)
                 {
-                *xoptset |= PCRE2_EXTRA_ASCII_POSIX;
+                *xoptset |= (PCRE2_EXTRA_ASCII_POSIX|PCRE2_EXTRA_ASCII_DIGIT);
                 ptr++;
                 break;
                 }
               if (*ptr == CHAR_S)
                 {
                 *xoptset |= PCRE2_EXTRA_ASCII_BSS;
+                ptr++;
+                break;
+                }
+              if (*ptr == CHAR_T)
+                {
+                *xoptset |= PCRE2_EXTRA_ASCII_DIGIT;
                 ptr++;
                 break;
                 }
@@ -4183,7 +4257,8 @@ while (ptr < ptrend)
                 }
               }
             *xoptset |= PCRE2_EXTRA_ASCII_BSD|PCRE2_EXTRA_ASCII_BSS|
-                        PCRE2_EXTRA_ASCII_BSW|PCRE2_EXTRA_ASCII_POSIX;
+                        PCRE2_EXTRA_ASCII_BSW|
+                        PCRE2_EXTRA_ASCII_DIGIT|PCRE2_EXTRA_ASCII_POSIX;
             break;
 
             case CHAR_J:  /* Record that it changed in the external options */
@@ -5967,13 +6042,13 @@ for (;; pptr++)
             xclass_has_prop = TRUE;
             goto CONTINUE_CLASS;
 
-            /* For the other POSIX classes (ascii, xdigit) we are going to
+            /* For the other POSIX classes (ex: ascii) we are going to
             fall through to the non-UCP case and build a bit map for
             characters with code points less than 256. However, if we are in
             a negated POSIX class, characters with code points greater than
             255 must either all match or all not match, depending on whether
             the whole class is not or is negated. For example, for
-            [[:^ascii:]... they must all match, whereas for [^[:^xdigit:]...
+            [[:^ascii:]... they must all match, whereas for [^[:^ascii:]...
             they must not.
 
             In the special case where there are no xclass items, this is
@@ -6285,11 +6360,11 @@ for (;; pptr++)
     characters > 255 are in or not in the class, so any that were explicitly
     given as well can be ignored.
 
-    In the UCP case, if certain negated POSIX classes ([:^ascii:] or
-    [^:xdigit:]) were present in a class, we either have to match or not match
-    all wide characters (depending on whether the whole class is or is not
-    negated). This requirement is indicated by match_all_or_no_wide_chars being
-    true. We do this by including an explicit range, which works in both cases.
+    In the UCP case, if certain negated POSIX classes (ex: [:^ascii:]) were
+    were present in a class, we either have to match or not match all wide
+    characters (depending on whether the whole class is or is not negated).
+    This requirement is indicated by match_all_or_no_wide_chars being true.
+    We do this by including an explicit range, which works in both cases.
     This applies only in UTF and 16-bit and 32-bit non-UTF modes, since there
     cannot be any wide characters in 8-bit non-UTF mode.
 

@@ -3420,6 +3420,18 @@
 /^\u{7a}/extra_alt_bsux
     zoo 
 
+/\u{}/extra_alt_bsux
+    u{}
+
+/\u{Q12}/extra_alt_bsux
+    --u{Q12}--
+
+/\u{ 12}/extra_alt_bsux
+    --u{ 12}--
+
+/\u{{3}}/extra_alt_bsux
+    --u{{{}--
+
 /(?(?=c)c|d)++Y/B
 
 /(?(?=c)c|d)*+Y/B
@@ -5983,5 +5995,37 @@ a)"xI
 /(?<!( {65054}){0,44965})/auto_callout
 
 /A+{,3}/
+
+/(\g{+1}Z|(A))+/
+    BAAZCD 
+    ZAAAZAZAZAACD 
+
+# This doesn't work in Perl (though I think it used to)
+
+/^(?=.*(?=(([A-Z]).*(?(1)\1)))(?!.+\2)){26}/i
+    The quick brown fox jumps over the lazy dog.
+    Jackdaws love my big sphinx of quartz.
+    Pack my box with five dozen liquor jugs.
+\= Expect no match
+    The quick brown fox jumps over the lazy cat.
+    Hackdaws love my big sphinx of quartz.
+    Pack my fox with five dozen liquor jugs.
+    
+# These are different to Perl because of the different capturing in repeating
+# groups.
+
+/((foo)|(bar))*/
+    foobar
+
+/(?:(f)(o)(o)|(b)(a)(r))*/
+    foobar
+
+/((Z)+|A)*/
+    ZABCDEFG
+
+/(?:(?P=same)?(?:(?P<same>a)|(?P<same>b))(?P=same))+/g,dupnames
+    bbbaaabaabb
+
+# --------
 
 # End of testinput2
