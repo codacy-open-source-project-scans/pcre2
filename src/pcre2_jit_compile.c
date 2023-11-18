@@ -410,7 +410,9 @@ typedef struct compiler_common {
   sljit_s32 match_end_ptr;
   /* Points to the marked string. */
   sljit_s32 mark_ptr;
-  /* Recursive control verb management chain. */
+  /* Head of the recursive control verb management chain.
+     Each item must have a previous offset and type
+     (see control_types) values. See do_search_mark. */
   sljit_s32 control_head_ptr;
   /* Points to the last matched capture block index. */
   sljit_s32 capture_last_ptr;
@@ -1510,15 +1512,17 @@ do
       case OP_ONCE:
       case OP_BRA:
       case OP_CBRA:
-      end = cc + GET(cc, 1);
-
       prev_fast_forward_allowed = fast_forward_allowed;
       fast_forward_allowed = FALSE;
+
       if (depth >= 4)
         break;
 
-      end = bracketend(cc) - (1 + LINK_SIZE);
-      if (*end != OP_KET || (*cc == OP_CBRA && common->optimized_cbracket[GET2(cc, 1 + LINK_SIZE)] == 0))
+      if (count == 0 && cc[GET(cc, 1)] == OP_ALT)
+        count = 1;
+
+      end = bracketend(cc);
+      if (end[-1 - LINK_SIZE] != OP_KET || (*cc == OP_CBRA && common->optimized_cbracket[GET2(cc, 1 + LINK_SIZE)] == 0))
         break;
 
       count = detect_early_fail(common, cc, private_data_start, depth + 1, count, prev_fast_forward_allowed);
@@ -1528,7 +1532,7 @@ do
 
       if (count < EARLY_FAIL_ENHANCE_MAX)
         {
-        cc = end + (1 + LINK_SIZE);
+        cc = end;
         continue;
         }
       break;
@@ -5945,6 +5949,7 @@ static BOOL check_fast_forward_char_pair_simd(compiler_common *common, fast_forw
 {
   sljit_s32 i, j, max_i = 0, max_j = 0;
   sljit_u32 max_pri = 0;
+  sljit_s32 max_offset = max_fast_forward_char_pair_offset();
   PCRE2_UCHAR a1, a2, a_pri, b1, b2, b_pri;
 
   for (i = max - 1; i >= 1; i--)
@@ -5955,7 +5960,7 @@ static BOOL check_fast_forward_char_pair_simd(compiler_common *common, fast_forw
       a2 = chars[i].chars[1];
       a_pri = chars[i].last_count;
 
-      j = i - max_fast_forward_char_pair_offset();
+      j = i - max_offset;
       if (j < 0)
         j = 0;
 
@@ -6649,7 +6654,8 @@ GET_LOCAL_BASE(TMP1, 0, 0);
 /* Drop frames until we reach STACK_TOP. */
 mainloop = LABEL();
 OP1(SLJIT_MOV, TMP2, 0, SLJIT_MEM1(STACK_TOP), -SSIZE_OF(sw));
-jump = CMP(SLJIT_SIG_LESS_EQUAL, TMP2, 0, SLJIT_IMM, 0);
+OP2U(SLJIT_SUB | SLJIT_SET_SIG_LESS_EQUAL | SLJIT_SET_Z, TMP2, 0, SLJIT_IMM, 0);
+jump = JUMP(SLJIT_SIG_LESS_EQUAL);
 
 OP2(SLJIT_ADD, TMP2, 0, TMP2, 0, TMP1, 0);
 if (HAS_VIRTUAL_REGISTERS)
@@ -6670,7 +6676,8 @@ else
 JUMPTO(SLJIT_JUMP, mainloop);
 
 JUMPHERE(jump);
-jump = CMP(SLJIT_NOT_ZERO /* SIG_LESS */, TMP2, 0, SLJIT_IMM, 0);
+sljit_set_current_flags(compiler, SLJIT_CURRENT_FLAGS_SUB | SLJIT_CURRENT_FLAGS_COMPARE | SLJIT_SET_SIG_LESS_EQUAL | SLJIT_SET_Z);
+jump = JUMP(SLJIT_NOT_ZERO /* SIG_LESS */);
 /* End of reverting values. */
 OP_SRC(SLJIT_FAST_RETURN, RETURN_ADDR, 0);
 
@@ -9862,9 +9869,9 @@ SLJIT_ASSERT(parent->top == NULL);
 if (*cc == OP_REVERSE)
   {
   reverse_failed = &parent->topbacktracks;
-  lmin = GET(cc, 1);
+  lmin = GET2(cc, 1);
   lmax = lmin;
-  cc += 1 + LINK_SIZE;
+  cc += 1 + IMM2_SIZE;
 
   SLJIT_ASSERT(lmin > 0);
   }
@@ -9874,9 +9881,9 @@ else
   PUSH_BACKTRACK(sizeof(vreverse_backtrack), cc, NULL);
 
   reverse_failed = &backtrack->topbacktracks;
-  lmin = GET(cc, 1);
-  lmax = GET(cc, 1 + IMM2_SIZE);
-  cc += 1 + 2 * LINK_SIZE;
+  lmin = GET2(cc, 1);
+  lmax = GET2(cc, 1 + IMM2_SIZE);
+  cc += 1 + 2 * IMM2_SIZE;
 
   SLJIT_ASSERT(lmin < lmax);
   }
@@ -10204,7 +10211,7 @@ while (1)
     if (conditional)
       {
       if (extrasize > 0)
-        OP1(SLJIT_MOV, STR_PTR, 0, SLJIT_MEM1(STACK_TOP), needs_control_head ? STACK(-2) : STACK(-1));
+        OP1(SLJIT_MOV, STR_PTR, 0, SLJIT_MEM1(STACK_TOP), STACK(-end_block_size - (needs_control_head ? 2 : 1)));
       }
     else if (bra == OP_BRAZERO)
       {
@@ -11243,7 +11250,7 @@ switch(opcode)
   case OP_CBRAPOS:
   case OP_SCBRAPOS:
   offset = GET2(cc, 1 + LINK_SIZE);
-  /* This case cannot be optimized in the same was as
+  /* This case cannot be optimized in the same way as
   normal capturing brackets. */
   SLJIT_ASSERT(common->optimized_cbracket[offset] == 0);
   cbraprivptr = OVECTOR_PRIV(offset);
@@ -13367,12 +13374,19 @@ static SLJIT_INLINE void compile_bracketpos_backtrackingpath(compiler_common *co
 DEFINE_COMPILER;
 int offset;
 struct sljit_jump *jump;
+PCRE2_SPTR cc;
 
+/* No retry on backtrack, just drop everything. */
 if (CURRENT_AS(bracketpos_backtrack)->framesize < 0)
   {
-  if (*current->cc == OP_CBRAPOS || *current->cc == OP_SCBRAPOS)
+  cc = current->cc;
+
+  if (*cc == OP_BRAPOSZERO)
+    cc++;
+
+  if (*cc == OP_CBRAPOS || *cc == OP_SCBRAPOS)
     {
-    offset = (GET2(current->cc, 1 + LINK_SIZE)) << 1;
+    offset = (GET2(cc, 1 + LINK_SIZE)) << 1;
     OP1(SLJIT_MOV, TMP1, 0, SLJIT_MEM1(STACK_TOP), STACK(0));
     OP1(SLJIT_MOV, TMP2, 0, SLJIT_MEM1(STACK_TOP), STACK(1));
     OP1(SLJIT_MOV, SLJIT_MEM1(SLJIT_SP), OVECTOR(offset), TMP1, 0);
@@ -14183,7 +14197,7 @@ common->compiler = compiler;
 
 /* Main pcre2_jit_exec entry. */
 SLJIT_ASSERT((private_data_size & (sizeof(sljit_sw) - 1)) == 0);
-sljit_emit_enter(compiler, 0, SLJIT_ARGS1(W, W), 5, 5, 0, 0, private_data_size);
+sljit_emit_enter(compiler, 0, SLJIT_ARGS1(W, W), 5, 5, SLJIT_NUMBER_OF_SCRATCH_FLOAT_REGISTERS, 0, private_data_size);
 
 /* Register init. */
 reset_ovector(common, (re->top_bracket + 1) * 2);
