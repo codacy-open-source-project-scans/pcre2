@@ -3093,8 +3093,16 @@ if (*cc == OP_COND || *cc == OP_SCOND)
   has_alternatives = FALSE;
 
 cc = next_opcode(common, cc);
+
 if (has_alternatives)
+  {
+  if (*cc == OP_REVERSE)
+    cc += 1 + IMM2_SIZE;
+  else if (*cc == OP_VREVERSE)
+    cc += 1 + 2 * IMM2_SIZE;
+
   current_offset = common->then_offsets + (cc - common->start);
+  }
 
 while (cc < end)
   {
@@ -3103,7 +3111,18 @@ while (cc < end)
   else
     {
     if (*cc == OP_ALT && has_alternatives)
-      current_offset = common->then_offsets + (cc + 1 + LINK_SIZE - common->start);
+      {
+      cc += 1 + LINK_SIZE;
+
+      if (*cc == OP_REVERSE)
+        cc += 1 + IMM2_SIZE;
+      else if (*cc == OP_VREVERSE)
+        cc += 1 + 2 * IMM2_SIZE;
+
+      current_offset = common->then_offsets + (cc - common->start);
+      continue;
+      }
+
     if (*cc >= OP_THEN && *cc <= OP_THEN_ARG && current_offset != NULL)
       *current_offset = 1;
     cc = next_opcode(common, cc);
@@ -8718,7 +8737,7 @@ c = *cc++;
 
 #if PCRE2_CODE_UNIT_WIDTH == 32
 if (c >= 0x110000)
-  return NULL;
+  return cc;
 #endif /* PCRE2_CODE_UNIT_WIDTH == 32 */
 lgb = UCD_GRAPHBREAK(c);
 
@@ -8958,7 +8977,7 @@ switch(type)
 #else
   sljit_emit_icall(compiler, SLJIT_CALL, SLJIT_ARGS2(W, W, W), SLJIT_IMM,
     common->invalid_utf ? SLJIT_FUNC_ADDR(do_extuni_utf_invalid) : SLJIT_FUNC_ADDR(do_extuni_no_utf));
-  if (!common->utf || common->invalid_utf)
+  if (common->invalid_utf)
     add_jump(compiler, backtracks, CMP(SLJIT_EQUAL, SLJIT_RETURN_REG, 0, SLJIT_IMM, 0));
 #endif
 
@@ -9539,9 +9558,11 @@ if (!minimize)
     if (ref)
       OP1(SLJIT_MOV, TMP1, 0, SLJIT_MEM1(SLJIT_SP), OVECTOR(offset));
     OP1(SLJIT_MOV, SLJIT_MEM1(STACK_TOP), STACK(0), SLJIT_IMM, 0);
+
     if (ref)
       {
-      add_jump(compiler, &backtrack->topbacktracks, CMP(SLJIT_EQUAL, TMP1, 0, SLJIT_MEM1(SLJIT_SP), OVECTOR(1)));
+      if (!common->unset_backref)
+        add_jump(compiler, &backtrack->topbacktracks, CMP(SLJIT_EQUAL, TMP1, 0, SLJIT_MEM1(SLJIT_SP), OVECTOR(1)));
       zerolength = CMP(SLJIT_EQUAL, TMP1, 0, SLJIT_MEM1(SLJIT_SP), OVECTOR(offset + 1));
       }
     else
@@ -12044,7 +12065,7 @@ switch(opcode)
     }
 
 #if defined SUPPORT_UNICODE && PCRE2_CODE_UNIT_WIDTH != 32
-  if (common->utf)
+  if (type == OP_EXTUNI || common->utf)
     {
     OP1(SLJIT_MOV, tmp_base, tmp_offset, STR_PTR, 0);
     detect_partial_match(common, &no_match);

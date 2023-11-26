@@ -595,6 +595,7 @@ static struct regression_test_case regression_test_cases[] = {
 	{ CMU | PCRE2_DUPNAMES, A, 0, 0, "(?:(?<A>AA)|(?<A>BB))\\k<A>{1,3}M", "aaaaaaaabbbbaabbbbm" },
 	{ CMU | PCRE2_DUPNAMES, A, 0, 0, "(?:(?<A>AA)|(?<A>BB))\\k<A>{0,3}?M", "aaaaaabbbbbbaabbbbbbbbbbm" },
 	{ CMU | PCRE2_DUPNAMES, A, 0, 0, "(?:(?<A>AA)|(?<A>BB))\\k<A>{2,3}?", "aaaabbbbaaaabbbbbbbbbb" },
+	{ MU | PCRE2_MATCH_UNSET_BACKREF, A, 0, 0, "(a)|\\1+c", "xxc" },
 
 	/* Assertions. */
 	{ MU, A, 0, 0, "(?=xx|yy|zz)\\w{4}", "abczzdefg" },
@@ -878,6 +879,7 @@ static struct regression_test_case regression_test_cases[] = {
 	{ MU, A, 0, 0, "(?!(?(?=a)ab|b(*THEN)d))bn|bnn", "bnn" },
 	{ MU, A, 0, 0, "(?=(*THEN: ))* ", " " },
 	{ MU, A, 0, 0, "a(*THEN)(?R) |", "a" },
+	{ MU, A, 0, 0 | F_NOMATCH, "(?<!(*THEN)a|(*THEN)b|(*THEN)ab?|(*THEN)ba?|)", "c" },
 
 	/* Recurse and control verbs. */
 	{ MU, A, 0, 0, "(a(*ACCEPT)b){0}a(?1)b", "aacaabb" },

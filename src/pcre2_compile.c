@@ -2194,7 +2194,11 @@ if (c == CHAR_LEFT_CURLY_BRACKET)
     {
     if (ptr >= cb->end_pattern) goto ERROR_RETURN;
     c = *ptr++;
+#if PCRE2_CODE_UNIT_WIDTH != 8
+    while (c == '_' || c == '-' || (c <= 0xff && isspace(c)))
+#else
     while (c == '_' || c == '-' || isspace(c))
+#endif
       {
       if (ptr >= cb->end_pattern) goto ERROR_RETURN;
       c = *ptr++;
@@ -2777,6 +2781,8 @@ uint32_t *verbstartptr = NULL;
 uint32_t *previous_callout = NULL;
 uint32_t *parsed_pattern = cb->parsed_pattern;
 uint32_t *parsed_pattern_end = cb->parsed_pattern_end;
+uint32_t *this_parsed_item = NULL;
+uint32_t *prev_parsed_item = NULL;
 uint32_t meta_quantifier = 0;
 uint32_t add_after_mark = 0;
 uint32_t xoptions = cb->cx->extra_options;
@@ -2876,6 +2882,17 @@ while (ptr < ptrend)
     {
     errorcode = ERR19;
     goto FAILED;        /* Parentheses too deeply nested */
+    }
+
+  /* If the last time round this loop something was added, parsed_pattern will
+  no longer be equal to this_parsed_item. Remember where the previous item
+  started and reset for the next item. Note that sometimes round the loop,
+  nothing gets added (e.g. for ignored white space). */
+
+  if (this_parsed_item != parsed_pattern)
+    {
+    prev_parsed_item = this_parsed_item;
+    this_parsed_item = parsed_pattern;
     }
 
   /* Get next input character, save its position for callout handling. */
@@ -3091,8 +3108,11 @@ while (ptr < ptrend)
          !read_repeat_counts(&tempptr, ptrend, NULL, NULL, &errorcode))))
     {
     if (after_manual_callout-- <= 0)
+      {
       parsed_pattern = manage_callouts(thisptr, &previous_callout, auto_callout,
         parsed_pattern, cb);
+      this_parsed_item = parsed_pattern;  /* New start for current item */
+      }
     }
 
   /* If expect_cond_assert is 2, we have just passed (?( and are expecting an
@@ -3168,7 +3188,6 @@ while (ptr < ptrend)
         0x00020000u : 0x00010000u);
     continue;  /* Next character in pattern */
     }
-
 
   /* Process the next item in the main part of a pattern. */
 
@@ -3431,7 +3450,8 @@ while (ptr < ptrend)
 
     /* ---- Quantifier post-processing ---- */
 
-    /* Check that a quantifier is allowed after the previous item. */
+    /* Check that a quantifier is allowed after the previous item. This
+    guarantees that there is a previous item. */
 
     CHECK_QUANTIFIER:
     if (!prev_okquantifier)
@@ -3446,7 +3466,7 @@ while (ptr < ptrend)
     wrapping it in non-capturing brackets, but we have to allow for a preceding
     (*MARK) for when (*ACCEPT) has an argument. */
 
-    if (parsed_pattern[-1] == META_ACCEPT)
+    if (*prev_parsed_item == META_ACCEPT)
       {
       uint32_t *p;
       for (p = parsed_pattern - 1; p >= verbstartptr; p--) p[1] = p[0];
