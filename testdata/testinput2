@@ -6066,4 +6066,13 @@ a)"xI
 /\G(?:(?=(\1.|)(.))){1,13}?(?!.*\2.*\2)\1\K\2/g
     aaabcccdeee
 
+/|(?0)./endanchored
+    abcd
+
+/|a(?0)/endanchored
+    aaaa
+
+/(?:|(?0).)(?(R)|\z)/
+    abcd
+
 # End of testinput2

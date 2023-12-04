@@ -838,17 +838,15 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
     assert_accept_frame = F;
     RRETURN(MATCH_ACCEPT);
 
-    /* If recursing, we have to find the most recent recursion. */
+    /* For ACCEPT within a recursion, we have to find the most recent
+    recursion. If not in a recursion, fall through to code that is common with
+    OP_END. */
 
     case OP_ACCEPT:
-    case OP_END:
-
-    /* Handle end of a recursion. */
-
     if (Fcurrent_recurse != RECURSE_UNSET)
       {
 #ifdef DEBUG_SHOW_OPS
-      fprintf(stderr, "++ End within recursion\n");
+      fprintf(stderr, "++ Accept within recursion\n");
 #endif
       offset = Flast_group_offset;
       for(;;)
@@ -857,7 +855,6 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
         N = (heapframe *)((char *)match_data->heapframes + offset);
         P = (heapframe *)((char *)N - frame_size);
         if (GF_IDMASK(N->group_frame_type) == GF_RECURSE) break;
-
         offset = P->last_group_offset;
         }
 
@@ -873,11 +870,17 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
       Fecode += 1 + LINK_SIZE;
       continue;
       }
+    /* Fall through */
 
-    /* Not a recursion. Fail for an empty string match if either PCRE2_NOTEMPTY
-    is set, or if PCRE2_NOTEMPTY_ATSTART is set and we have matched at the
-    start of the subject. In both cases, backtracking will then try other
-    alternatives, if any. */
+    /* OP_END itself can never be reached within a recursion because that is
+    picked up when the OP_KET that always precedes OP_END is reached. */
+
+    case OP_END:
+
+    /* Fail for an empty string match if either PCRE2_NOTEMPTY is set, or if
+    PCRE2_NOTEMPTY_ATSTART is set and we have matched at the start of the
+    subject. In both cases, backtracking will then try other alternatives, if
+    any. */
 
     if (Feptr == Fstart_match &&
          ((mb->moptions & PCRE2_NOTEMPTY) != 0 ||
@@ -5380,9 +5383,11 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
 
 
     /* ===================================================================== */
-    /* Recursion either matches the current regex, or some subexpression. The
-    offset data is the offset to the starting bracket from the start of the
-    whole pattern. (This is so that it works from duplicated subpatterns.) */
+    /* Pattern recursion either matches the current regex, or some
+    subexpression. The offset data is the offset to the starting bracket from
+    the start of the whole pattern. This is so that it works from duplicated
+    subpatterns. For a whole-pattern recursion, we have to infer the number
+    zero. */
 
 #define Lframe_type F->temp_32[0]
 #define Lstart_branch F->temp_sptr[0]
@@ -5391,9 +5396,10 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
     bracode = mb->start_code + GET(Fecode, 1);
     number = (bracode == mb->start_code)? 0 : GET2(bracode, 1 + LINK_SIZE);
 
-    /* If we are already in a recursion, check for repeating the same one
-    without advancing the subject pointer. This should catch convoluted mutual
-    recursions. (Some simple cases are caught at compile time.) */
+    /* If we are already in a pattern recursion, check for repeating the same
+    one without changing the subject pointer or the last referenced character
+    in the subject. This should catch convoluted mutual recursions. (Some
+    simple cases are caught at compile time.) */
 
     if (Fcurrent_recurse != RECURSE_UNSET)
       {
@@ -5404,15 +5410,18 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
         P = (heapframe *)((char *)N - frame_size);
         if (N->group_frame_type == (GF_RECURSE | number))
           {
-          if (Feptr == P->eptr) return PCRE2_ERROR_RECURSELOOP;
+          if (Feptr == P->eptr && mb->last_used_ptr == P->recurse_last_used)
+            return PCRE2_ERROR_RECURSELOOP;
           break;
           }
         offset = P->last_group_offset;
         }
       }
 
-    /* Now run the recursion, branch by branch. */
+    /* Remember the current last referenced character and then run the
+    recursion branch by branch. */
 
+    F->recurse_last_used = mb->last_used_ptr;
     Lstart_branch = bracode;
     Lframe_type = GF_RECURSE | number;
 
@@ -5856,7 +5865,8 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
     /* ===================================================================== */
     /* The end of a parenthesized group. For all but OP_BRA and OP_COND, the
     starting frame was added to the chained frames in order to remember the
-    starting subject position for the group. */
+    starting subject position for the group. (Not true for OP_BRA when it's a
+    whole pattern recursion, but that is handled separately below.)*/
 
     case OP_KET:
     case OP_KETRMIN:
@@ -5908,8 +5918,37 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
 
     switch (*bracode)
       {
-      case OP_BRA:    /* No need to do anything for these */
-      case OP_COND:
+      /* Whole pattern recursion is handled as a recursion into group 0, but
+      the entire pattern is wrapped in OP_BRA/OP_KET rather than a capturing
+      group - a design mistake: it should perhaps have been capture group 0.
+      Anyway, that means the end of such recursion must be handled here. It is
+      detected by checking for an immediately following OP_END when we are
+      recursing in group 0. If this is not the end of a whole-pattern
+      recursion, there is nothing to be done. */
+
+      case OP_BRA:
+      if (Fcurrent_recurse != 0 || Fecode[1+LINK_SIZE] != OP_END) break;
+
+      /* It is the end of whole-pattern recursion. */
+
+      offset = Flast_group_offset;
+      if (offset == PCRE2_UNSET) return PCRE2_ERROR_INTERNAL;
+      N = (heapframe *)((char *)match_data->heapframes + offset);
+      P = (heapframe *)((char *)N - frame_size);
+      Flast_group_offset = P->last_group_offset;
+
+      /* Reinstate the previous set of captures and then carry on after the
+      recursion call. */
+
+      memcpy((char *)F + offsetof(heapframe, ovector), P->ovector,
+        Foffset_top * sizeof(PCRE2_SIZE));
+      Foffset_top = P->offset_top;
+      Fcapture_last = P->capture_last;
+      Fcurrent_recurse = P->current_recurse;
+      Fecode = P->ecode + 1 + LINK_SIZE;
+      continue;  /* With next opcode */
+
+      case OP_COND:     /* No need to do anything for these */
       case OP_SCOND:
       break;
 
@@ -5976,9 +6015,8 @@ fprintf(stderr, "++ %2ld op=%3d %s\n", Fecode - mb->start_code, *Fecode,
       if (!PRIV(script_run)(P->eptr, Feptr, utf)) RRETURN(MATCH_NOMATCH);
       break;
 
-      /* Whole-pattern recursion is coded as a recurse into group 0, so it
-      won't be picked up here. Instead, we catch it when the OP_END is reached.
-      Other recursion is handled here. */
+      /* Whole-pattern recursion is coded as a recurse into group 0, and is
+      handled with OP_BRA above. Other recursion is handled here. */
 
       case OP_CBRA:
       case OP_CBRAPOS:
