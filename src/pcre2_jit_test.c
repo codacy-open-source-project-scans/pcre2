@@ -596,6 +596,7 @@ static struct regression_test_case regression_test_cases[] = {
 	{ CMU | PCRE2_DUPNAMES, A, 0, 0, "(?:(?<A>AA)|(?<A>BB))\\k<A>{0,3}?M", "aaaaaabbbbbbaabbbbbbbbbbm" },
 	{ CMU | PCRE2_DUPNAMES, A, 0, 0, "(?:(?<A>AA)|(?<A>BB))\\k<A>{2,3}?", "aaaabbbbaaaabbbbbbbbbb" },
 	{ MU | PCRE2_MATCH_UNSET_BACKREF, A, 0, 0, "(a)|\\1+c", "xxc" },
+	{ MU | PCRE2_MATCH_UNSET_BACKREF, A, 0, 0, "\\1+?()", "" },
 
 	/* Assertions. */
 	{ MU, A, 0, 0, "(?=xx|yy|zz)\\w{4}", "abczzdefg" },
@@ -655,6 +656,7 @@ static struct regression_test_case regression_test_cases[] = {
 	{ MU, A, 0, 0, "(?=(a(b(*ACCEPT)b)))a", "ab" },
 	{ MU, A, PCRE2_NOTEMPTY, 0, "(?=a*(*ACCEPT))c", "c" },
 	{ MU, A, PCRE2_NOTEMPTY, 0 | F_NOMATCH, "(?=A)", "AB" },
+	{ MU | PCRE2_ENDANCHORED, A, 0, 0, "aa(*ACCEPT)aa", "aaa" },
 
 	/* Conditional blocks. */
 	{ MU, A, 0, 0, "(?(?=(a))a|b)+k", "ababbalbbadabak" },
