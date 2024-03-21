@@ -5991,38 +5991,6 @@ if (timeit > 0)
 PCRE2_COMPILE(compiled_code, use_pbuffer, patlen,
   pat_patctl.options|use_forbid_utf, &errorcode, &erroroffset, use_pat_context);
 
-/* Call the JIT compiler if requested. When timing, we must free and recompile
-the pattern each time because that is the only way to free the JIT compiled
-code. We know that compilation will always succeed. */
-
-if (TEST(compiled_code, !=, NULL) && pat_patctl.jit != 0)
-  {
-  if (timeit > 0)
-    {
-    int i;
-    clock_t time_taken = 0;
-
-    for (i = 0; i < timeit; i++)
-      {
-      clock_t start_time;
-      SUB1(pcre2_code_free, compiled_code);
-      PCRE2_COMPILE(compiled_code, use_pbuffer, patlen,
-        pat_patctl.options|use_forbid_utf, &errorcode, &erroroffset,
-        use_pat_context);
-      start_time = clock();
-      PCRE2_JIT_COMPILE(jitrc, compiled_code, pat_patctl.jit);
-      time_taken += clock() - start_time;
-      }
-    total_jit_compile_time += time_taken;
-    fprintf(outfile, "JIT compile  %8.4f microseconds\n",
-      ((1000000 / CLOCKS_PER_SEC) * (double)time_taken) / timeit);
-    }
-  else
-    {
-    PCRE2_JIT_COMPILE(jitrc, compiled_code, pat_patctl.jit);
-    }
-  }
-
 /* If valgrind is supported, mark the pbuffer as accessible again. The 16-bit
 and 32-bit buffers can be marked completely undefined, but we must leave the
 pattern in the 8-bit buffer defined because it may be read from a callout
@@ -6049,6 +6017,50 @@ if (test_mode == PCRE32_MODE)
   }
 #endif
 #endif
+
+/* Call the JIT compiler if requested. When timing, we must free and recompile
+the pattern each time because that is the only way to free the JIT compiled
+code. We know that compilation will always succeed. */
+
+if (TEST(compiled_code, !=, NULL) && pat_patctl.jit != 0)
+  {
+  if (timeit > 0)
+    {
+    int i;
+    clock_t time_taken = 0;
+
+    for (i = 0; i < timeit; i++)
+      {
+      clock_t start_time;
+      SUB1(pcre2_code_free, compiled_code);
+      PCRE2_COMPILE(compiled_code, use_pbuffer, patlen,
+        pat_patctl.options|use_forbid_utf, &errorcode, &erroroffset,
+        use_pat_context);
+      start_time = clock();
+      PCRE2_JIT_COMPILE(jitrc, compiled_code, pat_patctl.jit);
+      time_taken += clock() - start_time;
+      if (jitrc != 0)
+        {
+        fprintf(outfile, "JIT compilation was not successful");
+        if (!print_error_message(jitrc, " (", ")\n")) return PR_ABEND;
+        break;
+        }
+      }
+    total_jit_compile_time += time_taken;
+    if (jitrc == 0)
+      fprintf(outfile, "JIT compile  %8.4f microseconds\n",
+        ((1000000 / CLOCKS_PER_SEC) * (double)time_taken) / timeit);
+    }
+  else
+    {
+    PCRE2_JIT_COMPILE(jitrc, compiled_code, pat_patctl.jit);
+    if (jitrc != 0 && (pat_patctl.control & CTL_JITVERIFY) != 0)
+      {
+      fprintf(outfile, "JIT compilation was not successful");
+      if (!print_error_message(jitrc, " (", ")\n")) return PR_ABEND;
+      }
+    }
+  }
 
 /* Compilation failed; go back for another re, skipping to blank line
 if non-interactive. */

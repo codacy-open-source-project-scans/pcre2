@@ -30,6 +30,7 @@ Further updates March 2024 by PH
 
 #include "config.h"
 #include "pcre2.h"
+#include "pcre2_internal.h"
 
 #define MAX_MATCH_SIZE 1000
 
@@ -317,6 +318,8 @@ if (size > 3)
       {
       int q = 0;
 
+      if (i >= size - 1) goto END_QSCAN;  /* Can happen for , */
+
       /* Ignore leading spaces */
 
       while (wdata[i+1] == ' ' || wdata[i+1] == '\t')
@@ -339,6 +342,8 @@ if (size > 3)
         if (wdata[j] < '0' || wdata[j] > '9') goto OUTERLOOP;
         q = q * 10 + wdata[j] - '0';
         }
+
+      if (j >= size) goto END_QSCAN;  /* End of data */
 
       /* Hit ',' or '}' or read 6 digits. Six digits is a number > 65536 which is
       the maximum quantifier. Leave such numbers alone. */
@@ -418,7 +423,7 @@ for (int i = 0; i < 2; i++)
   print_compile_options(stdout, compile_options);
 #endif
 
-  code = pcre2_compile((PCRE2_SPTR)data, (PCRE2_SIZE)size, compile_options,
+  code = pcre2_compile((PCRE2_SPTR)wdata, (PCRE2_SIZE)size, compile_options,
     &errorcode, &erroroffset, NULL);
 
   /* Compilation succeeded */
@@ -428,15 +433,27 @@ for (int i = 0; i < 2; i++)
     int j;
     uint32_t save_match_options = match_options;
 
+    /* Call JIT compile only if the compiled pattern is not too big. */
+
 #ifdef SUPPORT_JIT
-    int jit_ret;
+    int jit_ret = -1;
+    if (((struct pcre2_real_code *)code)->blocksize <= 1024 * 1024)
+      {
 #ifdef STANDALONE
-    printf("Calling JIT compile\n");
+      printf("Calling JIT compile\n");
 #endif
-    jit_ret = pcre2_jit_compile(code, PCRE2_JIT_COMPLETE);
+      jit_ret = pcre2_jit_compile(code, PCRE2_JIT_COMPLETE);
 #ifdef STANDALONE
-    if (jit_ret < 0) printf("JIT compile error %d\n", jit_ret);
+      if (jit_ret < 0) printf("JIT compile error %d\n", jit_ret);
 #endif
+      }
+    else
+      {
+#ifdef STANDALONE
+      printf("Not calling JIT: compiled pattern is too long (%ld bytes)\n",
+        ((struct pcre2_real_code *)code)->blocksize);
+#endif
+      }
 #endif  /* SUPPORT_JIT */
 
     /* Create match data and context blocks only when we first need them. Set
@@ -487,7 +504,7 @@ for (int i = 0; i < 2; i++)
 #endif
 
       callout_count = 0;
-      errorcode = pcre2_match(code, (PCRE2_SPTR)data, (PCRE2_SIZE)match_size, 0,
+      errorcode = pcre2_match(code, (PCRE2_SPTR)wdata, (PCRE2_SIZE)match_size, 0,
         match_options, match_data, match_context);
 
 #ifdef STANDALONE
@@ -505,7 +522,7 @@ with the interpreter. */
         printf("Matching with JIT\n");
 #endif
         callout_count = 0;
-        errorcode_jit = pcre2_match(code, (PCRE2_SPTR)data, (PCRE2_SIZE)match_size, 0,
+        errorcode_jit = pcre2_match(code, (PCRE2_SPTR)wdata, (PCRE2_SIZE)match_size, 0,
           match_options & ~PCRE2_NO_JIT, match_data_jit, match_context);
 
 #ifdef STANDALONE
@@ -530,7 +547,7 @@ with the interpreter. */
                 errorcode != PCRE2_ERROR_MATCHLIMIT && errorcode != PCRE2_ERROR_CALLOUT &&
                 errorcode_jit != PCRE2_ERROR_MATCHLIMIT && errorcode_jit != PCRE2_ERROR_JIT_STACKLIMIT && errorcode_jit != PCRE2_ERROR_CALLOUT)
             {
-            describe_failure("match errorcode comparison", data, size, compile_options, match_options, errorcode, errorcode_jit, matches, matches_jit, match_data, match_data_jit);
+            describe_failure("match errorcode comparison", wdata, size, compile_options, match_options, errorcode, errorcode_jit, matches, matches_jit, match_data, match_data_jit);
             }
           }
         else
@@ -548,7 +565,7 @@ with the interpreter. */
 
             if (errorcode != errorcode_jit)
               {
-              describe_failure("match entry errorcode comparison", data, size,
+              describe_failure("match entry errorcode comparison", wdata, size,
                 compile_options, match_options, errorcode, errorcode_jit,
                 matches, matches_jit, match_data, match_data_jit);
               }
@@ -557,14 +574,14 @@ with the interpreter. */
               {
               if (bufflen != bufflen_jit)
                 {
-                describe_failure("match entry length comparison", data, size,
+                describe_failure("match entry length comparison", wdata, size,
                   compile_options, match_options, errorcode, errorcode_jit,
                   matches, matches_jit, match_data, match_data_jit);
                 }
 
               if (memcmp(bufferptr, bufferptr_jit, bufflen) != 0)
                 {
-                describe_failure("match entry content comparison", data, size,
+                describe_failure("match entry content comparison", wdata, size,
                   compile_options, match_options, errorcode, errorcode_jit,
                   matches, matches_jit, match_data, match_data_jit);
                 }
@@ -608,7 +625,7 @@ with the interpreter. */
 #endif
 
       callout_count = 0;
-      errorcode = pcre2_dfa_match(code, (PCRE2_SPTR)data,
+      errorcode = pcre2_dfa_match(code, (PCRE2_SPTR)wdata,
         (PCRE2_SIZE)match_size, 0, match_options, match_data,
         match_context, dfa_workspace, DFA_WORKSPACE_COUNT);
 
