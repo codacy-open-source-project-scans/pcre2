@@ -23,6 +23,7 @@ Further updates March 2024 by PH
 #include <sys/resource.h>
 
 #define STACK_SIZE_MB 256
+#define JIT_SIZE_LIMIT (500 * 1024)
 
 #ifndef PCRE2_CODE_UNIT_WIDTH
 #define PCRE2_CODE_UNIT_WIDTH 8
@@ -335,7 +336,9 @@ if (size > 3)
         {
         if (wdata[j] == ' ' || wdata[j] == '\t')
           {
-          do j++; while (j < size && (wdata[j] == ' ' || wdata[j] == '\t'));
+          j++;
+          while (j < size && (wdata[j] == ' ' || wdata[j] == '\t')) j++;
+          if (j >= size) goto OUTERLOOP;
           if (wdata[j] != '}' && wdata[j] != ',') goto OUTERLOOP;
           }
         if (wdata[j] == '}' || (ii == 0 && wdata[j] == ',')) break;
@@ -437,7 +440,7 @@ for (int i = 0; i < 2; i++)
 
 #ifdef SUPPORT_JIT
     int jit_ret = -1;
-    if (((struct pcre2_real_code *)code)->blocksize <= 1024 * 1024)
+    if (((struct pcre2_real_code *)code)->blocksize <= JIT_SIZE_LIMIT)
       {
 #ifdef STANDALONE
       printf("Calling JIT compile\n");
@@ -450,8 +453,9 @@ for (int i = 0; i < 2; i++)
     else
       {
 #ifdef STANDALONE
-      printf("Not calling JIT: compiled pattern is too long (%ld bytes)\n",
-        ((struct pcre2_real_code *)code)->blocksize);
+      printf("Not calling JIT: compiled pattern is too long "
+        "(%ld bytes; limit=%d)\n",
+        ((struct pcre2_real_code *)code)->blocksize, JIT_SIZE_LIMIT);
 #endif
       }
 #endif  /* SUPPORT_JIT */
